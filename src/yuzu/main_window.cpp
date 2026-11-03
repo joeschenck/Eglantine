@@ -459,29 +459,6 @@ MainWindow::MainWindow(bool has_broken_vulkan)
     // Gen keys if necessary
     OnCheckFirmwareDecryption(false);
 
-    auto* recommendations = new QMessageBox(
-        QMessageBox::Question, tr("Recommended Mario Kart World settings"),
-        tr("Use the recommended settings for Mario Kart World?\n\n"
-           "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
-           "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and FXAA.\n\n"
-           "Yes replaces your saved settings. No or closing this window keeps your settings."),
-        QMessageBox::Yes | QMessageBox::No, this);
-    recommendations->setAttribute(Qt::WA_DeleteOnClose);
-    recommendations->setDefaultButton(QMessageBox::No);
-    recommendations->setEscapeButton(QMessageBox::No);
-    recommendations->setWindowModality(Qt::NonModal);
-    connect(recommendations, &QMessageBox::finished, this, [this](int result) {
-        use_recommended_mkw_settings = result == QMessageBox::Yes;
-        if (use_recommended_mkw_settings && !emulation_running && !boot_in_progress) {
-            Settings::SetMarioKartWorldRecommendedSettings(Settings::values, true);
-            config->SaveAllValues();
-            QtCommon::system->ApplySettings();
-            UpdateStatusButtons();
-        }
-        LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
-    });
-    recommendations->show();
-
 #ifdef __unix__
     OnCheckGraphicsBackend();
 #endif
@@ -1989,6 +1966,20 @@ void MainWindow::BootGame(const QString& filename, Service::AM::FrontendAppletPa
         QtCommon::system->ApplySettings();
     }
 
+    if (title_id == Settings::MarioKartWorldProgramId && !asked_recommended_mkw_settings) {
+        asked_recommended_mkw_settings = true;
+        use_recommended_mkw_settings =
+            QMessageBox::question(
+                this, tr("Recommended Mario Kart World settings"),
+                tr("Use the recommended settings for Mario Kart World?\n\n"
+                   "Vulkan, 1x resolution, GPU Fast, asynchronous shaders, BC3, conservative VRAM, "
+                   "reactive flushing off, FIFO Relaxed VSync, handheld mode, ScaleForce, and "
+                   "FXAA.\n\n"
+                   "They apply to Mario Kart World until Eglantine is closed. Your saved settings "
+                   "are not changed."),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        LOG_INFO(Config, "MKW recommended settings accepted: {}", use_recommended_mkw_settings);
+    }
     if (Settings::ApplyMarioKartWorldPreset(Settings::values, title_id,
                                           use_recommended_mkw_settings)) {
         QtCommon::system->ApplySettings();
@@ -2433,10 +2424,9 @@ void MainWindow::OnGameListOpenFolder(u64 program_id, GameListOpenTarget target,
         }
     }();
 
-    const bool has_user_save{user_save_size > 0};
-    const bool has_device_save{device_save_size > 0};
-
-    ASSERT_MSG(has_user_save != has_device_save, "Game uses both user and device savedata?");
+    // Some titles (e.g. NX2 games) report no sizes in their NACP yet still create account saves
+    // at runtime, so only use the device layout when it is explicitly declared.
+    const bool use_device_save{device_save_size > 0 && user_save_size == 0};
 
     switch (target) {
     case GameListOpenTarget::SaveData: {
@@ -2445,26 +2435,23 @@ void MainWindow::OnGameListOpenFolder(u64 program_id, GameListOpenTarget target,
         auto vfs_save_dir = QtCommon::vfs->OpenDirectory(Common::FS::PathToUTF8String(save_dir),
                                                          FileSys::OpenMode::Read);
 
-        if (has_user_save) {
-            // User save data
+        u128 save_user_id{};
+        if (!use_device_save) {
             const auto user_id = GetProfileID();
-            assert(user_id);
-
-            const auto user_save_data_path = FileSys::SaveDataFactory::GetFullPath(
-                {}, vfs_save_dir, FileSys::SaveDataSpaceId::User, FileSys::SaveDataType::Account,
-                program_id, user_id->AsU128(), 0);
-
-            path = Common::FS::ConcatPathSafe(save_dir, user_save_data_path);
-        } else {
-            // Device save data
-            const auto device_save_data_path = FileSys::SaveDataFactory::GetFullPath(
-                {}, vfs_save_dir, FileSys::SaveDataSpaceId::User, FileSys::SaveDataType::Account,
-                program_id, {}, 0);
-
-            path = Common::FS::ConcatPathSafe(save_dir, device_save_data_path);
+            if (user_id) {
+                save_user_id = user_id->AsU128();
+            }
         }
 
-        if (!Common::FS::CreateDirs(path)) {
+        const auto save_data_path = FileSys::SaveDataFactory::GetFullPath(
+            {}, vfs_save_dir, FileSys::SaveDataSpaceId::User, FileSys::SaveDataType::Account,
+            program_id, save_user_id, 0);
+
+        path = Common::FS::ConcatPathSafe(save_dir, save_data_path);
+
+        // Only create the folder for games that are known to need it; otherwise an empty
+        // directory would be left behind in the wrong place.
+        if ((user_save_size > 0 || device_save_size > 0) && !Common::FS::CreateDirs(path)) {
             LOG_ERROR(Frontend, "Unable to create the directories for save data");
         }
 
