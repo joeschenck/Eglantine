@@ -59,6 +59,12 @@ jobs:
           ref: ${{ inputs.sha }}
           persist-credentials: false
 
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: linux-${{ matrix.arch }}${{ matrix.pgo && '-pgo' || '' }}
+          max-size: 3G
+
       - name: Setup build from checked-out source
         if: hashFiles('.github/actions/setup-build/action.yml') != ''
         uses: ./.github/actions/setup-build
@@ -78,6 +84,14 @@ jobs:
           refspec: ${{ inputs.refspec }}
           tag: ${{ inputs.tag }}
           release: ${{ inputs.release }}
+
+      - name: Cache APT packages
+        uses: actions/cache@v6
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
 
       - name: Install Linux dependencies
         shell: bash
